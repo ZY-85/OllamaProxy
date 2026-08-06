@@ -17,15 +17,13 @@ import time
 import requests
 import yaml
 from flask import Flask, Response, request, stream_with_context
-"""
-# ── 按需启用--修复 Windows 控制台编码 ──
+# ── 修复 部分版本Windows 控制台乱码 ──
 if sys.platform == "win32":
     # 激活 ANSI 转义序列支持（部分 Windows 版本需要）
     os.system("chcp 65001 >nul 2>&1")
     # 强制设置标准输出的编码
     sys.stdout = open(sys.stdout.fileno(), mode='w', encoding='utf-8', buffering=1)
     sys.stderr = open(sys.stderr.fileno(), mode='w', encoding='utf-8', buffering=1)
-"""
 # ===================================================================
 # 日志
 # ===================================================================

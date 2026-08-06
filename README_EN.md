@@ -1,173 +1,122 @@
 # OllamaProxy
+> A lightweight proxy that masquerades as an Ollama service, allowing VS2026 / SSMS22 Copilot to use any cloud-based LLM (DeepSeek / OpenAI / Claude, etc.).
 
-A lightweight proxy that masquerades as an Ollama service, enabling VS2026 / SSMS22 Copilot to use any cloud LLM.
-
+> [中文](./README.md)
+## Quick Start
+### 1. Install Dependencies
+Requires Python 3.8+ environment.
+```bash
+pip install flask requests pyyaml
 ```
-VS2026 / SSMS22 Copilot ── Ollama Protocol ──→ OllamaProxy ── OpenAI Protocol ──→ Cloud API
-                        localhost:11434                   (DeepSeek / OpenAI / Claude / ...)
-```
-
-## Design
-
-**The proxy does two things: route and rename.**
-
-VS2026 Copilot natively speaks OpenAI protocol — it doesn't need format translation, just a proxy to route requests to the correct upstream. The core logic:
-
-1. **Model name mapping**: `ollama_name` (exposed to Copilot) ↔ `upstream_name` (real API model name)
-2. **Request routing**: look up `base_url` + `api_key` by model name, forward to the right upstream
-3. **Response renaming**: replace the upstream model name in responses back to `ollama_name`, so Copilot sees a consistent name
-
-```
-Request:   ollama_name → upstream_name  (v4flash → deepseek-chat)
-Response:  upstream_name → ollama_name  (deepseek-chat → v4flash)
-```
-
-Copilot always sees `v4flash`. The proxy handles name mapping internally. The upstream only knows `deepseek-chat`.
-
-The proxy is not a capability gate — model capabilities are declared in config, `/api/show` reports them honestly, and the upstream API decides whether it can actually handle tools or images.
-
-## Configuration
-
-Config file at `%USERPROFILE%\.ollama-proxy\config.yaml`. A custom path can be passed via command line.
-
+### 2. Create Configuration File
+Create the configuration file in the user's home directory:
+- **Windows**: `%USERPROFILE%\.ollama-proxy\config.yaml`
+- **Linux/macOS**: `~/.ollama-proxy/config.yaml`
+**Minimal Configuration Example**:
 ```yaml
-# ~/.ollama-proxy/config.yaml
-
 server:
-  host: "127.0.0.1"
   port: 11434
-  timeout: 120
-
 models:
   - ollama_name: "deepseek-chat"
     upstream_name: "deepseek-chat"
     base_url: "https://api.deepseek.com/v1"
-    api_key: "sk-xxxxxxxx"
-    context_length: 128000
-    capabilities:
-      - completion
-      - tools
-
+    api_key: "sk-xxxxxxxxxx"
+```
+### 3. Start the Proxy
+```bash
+python proxy.py
+```
+Upon successful startup, the listening address and model list will be displayed.
+### 4. Connect VS2026 / SSMS22
+1. Open the Copilot Chat window.
+2. Click the model dropdown → **Manage Models**.
+3. Select **Ollama** as the Provider.
+4. Set the Endpoint to: `http://localhost:11434`.
+5. Save, and the configured models will appear in the list.
+---
+## Core Concepts
+### Architecture Flow
+```mermaid
+graph LR
+    A[VS2026 Copilot] -->|"Ollama Protocol (Discovery)"| B(OllamaProxy)
+    A -->|"OpenAI Protocol (Chat)"| B
+    B -->|"OpenAI Protocol"| C{Cloud API}
+    C -->|Response| B
+    B -->|Renamed Response| A
+```
+### Working Principle
+VS2026 Copilot adopts a **Hybrid Protocol** mode:
+- **Model Discovery**: Uses native Ollama endpoints (`/api/tags`, `/api/show`) to get the model list and capabilities.
+- **Actual Chat**: Uses OpenAI compatible endpoints (`/v1/chat/completions`) to send requests.
+The proxy's core job is **Protocol Adaptation and Model Name Mapping**:
+1. Intercept Copilot requests and route them to the correct cloud API based on configuration.
+2. Replace the model name (`ollama_name`) in the request with the real cloud name (`upstream_name`).
+3. Swap the model name back in the response to ensure consistency in the Copilot interface.
+---
+## Detailed Configuration
+### Configuration File Search Order
+The program looks for the configuration file in the following order (highest to lowest priority):
+1. Command-line argument: `python proxy.py -c /path/to/config.yaml`
+2. Environment variable: `OLLAMA_PROXY_CONFIG=/path/to/config.yaml`
+3. Default path: `~/.ollama-proxy/config.yaml`
+### Full Configuration Items
+| Field | Required | Default | Description |
+| :--- | :---: | :--- | :--- |
+| `ollama_name` | ✅ | - | Model name exposed to Copilot, customizable |
+| `upstream_name` | ✅ | - | Real model name of the upstream API |
+| `base_url` | ✅ | - | Upstream API address (must be OpenAI compatible) |
+| `api_key` | ✅ | - | Upstream API key |
+| `context_length` | ❌ | 128000 | Context window size, reported to Copilot |
+| `capabilities` | ❌ | `["completion"]` | Model capabilities: `completion`, `tools`, `vision` |
+### Full Configuration Example
+A complete example containing server configuration and multiple model configurations:
+```yaml
+server:
+  host: "127.0.0.1"   # Listening address
+  port: 11434         # Listening port
+  timeout: 120        # Request timeout (seconds)
+models:
+  # DeepSeek Full Configuration Example
   - ollama_name: "deepseek-v3"
     upstream_name: "deepseek-chat"
     base_url: "https://api.deepseek.com/v1"
     api_key: "sk-xxxxxxxx"
-    context_length: 128000
-    capabilities:
-      - completion
-      - tools
-
+    context_length: 128000        # Optional: Context window size
+    capabilities: [completion, tools] # Optional: Model capabilities
+  # Claude Configuration Example
   - ollama_name: "claude-sonnet"
     upstream_name: "claude-sonnet-5-20251001"
     base_url: "https://api.anthropic.com/v1"
     api_key: "sk-ant-xxxxxxxx"
     context_length: 200000
-    capabilities:
-      - completion
-      - tools
-      - vision
+    capabilities: [completion, tools, vision]
 ```
-
-### Fields
-
-| Field | Required | Description |
-|---|---|---|
-| `ollama_name` | ✅ | Model name exposed to Copilot |
-| `upstream_name` | ✅ | Model name sent to upstream API |
-| `base_url` | ✅ | Upstream API endpoint (OpenAI-compatible) |
-| `api_key` | ✅ | Upstream API key |
-| `context_length` | No (default 128000) | Context window size reported to Copilot |
-| `capabilities` | No (default `[completion]`) | Model capabilities: `completion`, `tools`, `vision` |
-
-### Config Loading Order
-
-1. Command line `-c <path>`
-2. Environment variable `OLLAMA_PROXY_CONFIG`
-3. Default path `%USERPROFILE%\.ollama-proxy\config.yaml`
-
-## Copilot Interaction Flow
-
-VS2026 Copilot uses a **hybrid protocol**:
-
-- **Model discovery** → Ollama endpoints (`/api/tags`, `/api/show`)
-- **Chat** → OpenAI endpoint (`/v1/chat/completions`)
-
-No Ollama ↔ OpenAI format translation is needed — Copilot speaks OpenAI natively. The proxy only handles model name mapping:
-
-```
-Copilot                        Proxy                         Upstream
-───────────                    ──────────                    ────────
-GET /api/tags  ──────────→  Return ollama_name list
-POST /api/show ──────────→  Return capabilities + ctx_len   (not forwarded)
-
-POST /v1/chat/completions
-  model: "v4flash"    ──→  Rename to upstream_name ──→  POST /chat/completions
-  messages: [...]           Forward to base_url          model: "deepseek-chat"
-  stream: true                                          messages: [...]
-  tools: [...]                                          stream: true
-                                                        tools: [...]
-
-                          ←  Rename model in response  ←  SSE / JSON
-                              upstream_name → ollama_name
-                              Copilot always sees "v4flash"
-```
-
-## Endpoints
-
-| Endpoint | Method | Purpose | Notes |
-|---|---|---|---|
-| `/` | GET | Health check | Returns version |
-| `/api/tags` | GET | Model discovery | Ollama format |
-| `/api/show` | POST | Model capabilities & context | Answered from config |
-| `/v1/models` | GET | Model list (OpenAI format) | For clients that prefer it |
-| `/v1/chat/completions` | POST | **Copilot's actual chat endpoint** | Rename model → forward → rename back |
-| `/api/chat` | POST | Ollama native chat | Ollama ↔ OpenAI format conversion, for native Ollama clients |
-
-## Quick Start
-
-### 1. Install Dependencies
-
+---
+## API Endpoints
+The proxy service provides two categories of endpoints:
+### 1. Model Discovery (Ollama Protocol)
+Used to respond to Copilot's model list queries and capability detection requests.
+| Endpoint | Method | Description |
+| :--- | :---: | :--- |
+| `/` | GET | Health check, returns version number |
+| `/api/tags` | GET | Returns model list from configuration |
+| `/api/show` | POST | Returns model details (context length, capabilities) |
+| `/v1/models` | GET | OpenAI format model list (compatibility fallback) |
+### 2. Chat Communication (OpenAI Protocol)
+Endpoints where Copilot actually initiates dialogue. The proxy swaps model names and passes through requests.
+| Endpoint | Method | Description |
+| :--- | :---: | :--- |
+| `/v1/chat/completions` | POST | **Core Endpoint**, used by VS2026 Copilot |
+| `/api/chat` | POST | Native Ollama format (includes format conversion for other clients) |
+## Verification & Testing
+Use `curl` to quickly test connectivity:
 ```bash
-pip install flask requests pyyaml
-```
-
-### 2. Create Config
-
-Create `config.yaml` under `%USERPROFILE%\.ollama-proxy\` with your API credentials and model list.
-
-### 3. Start
-
-```bash
-python proxy.py
-```
-
-### 4. Use in VS2026 / SSMS22
-
-1. Open Copilot Chat → model dropdown → Manage Models
-2. Select Ollama as the Provider
-3. Point the Endpoint to `http://localhost:11434`
-4. Pick a model from the list
-
-## Verification
-
-```bash
-# Health check
-curl http://localhost:11434/
-
-# Model list
+# 1. Get model list
 curl http://localhost:11434/api/tags
-
-# Model details
-curl -X POST http://localhost:11434/api/show -H "Content-Type: application/json" -d "{\"model\":\"deepseek-chat\"}"
-
-# Chat test (Ollama native format)
-curl http://localhost:11434/api/chat -H "Content-Type: application/json" -d "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":false}"
-
-# Chat test (OpenAI format — the endpoint Copilot actually uses)
-curl http://localhost:11434/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":false}"
+# 2. Test chat (OpenAI format)
+curl http://localhost:11434/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "deepseek-chat", "messages": [{"role": "user", "content": "Hi"}], "stream": false}'
 ```
-
-## License & Author
-
-- **Author**: ZY
-- **License**: [MIT License](https://opensource.org/licenses/MIT)
+## License
+[MIT License](https://opensource.org/licenses/MIT) © ZY
