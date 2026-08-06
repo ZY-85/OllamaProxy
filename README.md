@@ -1,130 +1,173 @@
 # OllamaProxy
 
-一个轻量级的本地代理服务，旨在将自身伪装为 Ollama 服务，并将接收到的请求转发至任意 OpenAI 兼容的 API 提供商（如 DeepSeek、智谱 GLM、硅基流动等）。
-
-通过此代理，你可以让 Visual Studio 的 Copilot 或其他默认仅支持 Ollama 本地模型的工具，直接无缝接入云端大模型服务，无需修改客户端代码。
-
-> [English](README_EN.md)
-
-## 目录
-
-- [核心特性](#-核心特性)
-- [架构](#-架构)
-- [快速开始](#-快速开始)
-- [路由说明](#-路由说明)
-- [验证代理](#-验证代理)
-- [局限性](#-局限性)
-- [协议与作者](#-协议与作者)
-
-## ✨ 核心特性
-
-- **双协议兼容**：同时支持 `/v1/`（OpenAI SDK 格式）和 `/api/`（Ollama 原生格式）路由。VS Copilot 等多数现代工具走 `/v1/`，而某些仅支持 Ollama 原生协议的老工具走 `/api/` 备用。
-- **流式支持**：完美处理非流式与流式（SSE / NDJSON）响应，支持逐字输出体验。
-- **智能路由**：`/v1/chat/completions` 零转换透传，几乎无开销；`/api/chat` 自动完成 Ollama ↔ OpenAI 格式双向转换。
-- **无缝集成**：监听 Ollama 默认端口 `11434`，VS / Copilot 等工具无需额外配置即可识别。
-
-## 🏗 架构
+一个轻量级代理，把自己伪装成 Ollama 服务，让 VS2026 / SSMS22 的 Copilot 可以使用任意云端大模型。
 
 ```
-┌──────────────────┐     HTTP      ┌──────────────────┐     HTTPS     ┌──────────────────┐
-│  VS Copilot /    │ ───────────▶  │   OllamaProxy    │ ───────────▶  │  上游 API 提供商   │
-│  其他 Ollama 工具  │  localhost    │   :11434         │               │  (OpenAI 兼容)    │
-│                  │ ◀───────────  │                  │ ◀───────────  │                  │
-└──────────────────┘               └──────────────────┘               └──────────────────┘
-                                         │
-                        ┌────────────────┼────────────────┐
-                        ▼                                 ▼
-                   /v1/* 路由                         /api/* 路由
-                (OpenAI SDK 格式)                (Ollama 原生格式)
-                   零转换透传                    请求/响应格式双向转换
+VS2026 / SSMS22 Copilot ── Ollama 协议 ──→ OllamaProxy ── OpenAI 协议 ──→ 云端 API
+                        localhost:11434                   (DeepSeek / OpenAI / Claude / ...)
 ```
 
-## 🚀 快速开始
+## 设计思路
+
+**代理做两件事：路由和改名。**
+
+VS2026 Copilot 本身就是 OpenAI 协议栈——它不需要格式转换，只需要代理帮它找到正确的上游。代理的核心逻辑非常简单：
+
+1. **模型名映射**：`ollama_name`（对 Copilot 暴露）↔ `upstream_name`（真实 API 模型名）
+2. **请求路由**：根据模型名查找对应的 `base_url` + `api_key`，转发到正确上游
+3. **响应改名**：把上游响应里的模型名换回 `ollama_name`，Copilot 全程看到一致的名字
+
+```
+请求方向:  ollama_name → upstream_name  （v4flash → deepseek-chat）
+响应方向:  upstream_name → ollama_name  （deepseek-chat → v4flash）
+```
+
+Copilot 始终看到 `v4flash`，代理内部处理名字映射，上游只认识 `deepseek-chat`。
+
+代理不是能力网关——每个模型的能力写在配置文件里，`/api/show` 如实报告，上游 API 能不能处理 tools、images 是上游的事。
+
+## 配置
+
+配置文件放在 `%USERPROFILE%\.ollama-proxy\config.yaml`，也可以通过命令行指定其他位置。
+
+```yaml
+# ~/.ollama-proxy/config.yaml
+
+server:
+  host: "127.0.0.1"
+  port: 11434
+  timeout: 120
+
+models:
+  - ollama_name: "deepseek-chat"
+    upstream_name: "deepseek-chat"
+    base_url: "https://api.deepseek.com/v1"
+    api_key: "sk-xxxxxxxx"
+    context_length: 128000
+    capabilities:
+      - completion
+      - tools
+
+  - ollama_name: "deepseek-v3"
+    upstream_name: "deepseek-chat"
+    base_url: "https://api.deepseek.com/v1"
+    api_key: "sk-xxxxxxxx"
+    context_length: 128000
+    capabilities:
+      - completion
+      - tools
+
+  - ollama_name: "claude-sonnet"
+    upstream_name: "claude-sonnet-5-20251001"
+    base_url: "https://api.anthropic.com/v1"
+    api_key: "sk-ant-xxxxxxxx"
+    context_length: 200000
+    capabilities:
+      - completion
+      - tools
+      - vision
+```
+
+### 配置项说明
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `ollama_name` | ✅ | 对 Copilot 暴露的模型名 |
+| `upstream_name` | ✅ | 发给上游 API 的 model 参数 |
+| `base_url` | ✅ | 上游 API 地址（OpenAI 兼容格式） |
+| `api_key` | ✅ | 上游 API Key |
+| `context_length` | 否 (默认 128000) | 上下文窗口大小，报告给 Copilot |
+| `capabilities` | 否 (默认 `[completion]`) | 模型能力：`completion`、`tools`、`vision` |
+
+### 配置加载顺序
+
+1. 命令行 `-c <path>` 指定的路径
+2. 环境变量 `OLLAMA_PROXY_CONFIG`
+3. 默认路径 `%USERPROFILE%\.ollama-proxy\config.yaml`
+
+## Copilot 交互流程
+
+VS2026 Copilot 的交互模式是**混合协议**：
+
+- **模型发现** → Ollama 端点 (`/api/tags`, `/api/show`)
+- **对话通信** → OpenAI 端点 (`/v1/chat/completions`)
+
+代理不需要做 OpenAI ↔ Ollama 格式转换，因为 Copilot 内部本身就讲 OpenAI 协议。代理的核心逻辑是**模型名映射**：
+
+```
+Copilot                        代理                          上游 API
+───────────                    ──────────                    ────────
+GET /api/tags  ──────────→  返回 ollama_name 列表
+POST /api/show ──────────→  返回 capabilities + ctx_len    （不转发）
+
+POST /v1/chat/completions
+  model: "v4flash"    ──→  改名 upstream_name ──→  POST /chat/completions
+  messages: [...]           转发到 base_url         model: "deepseek-chat"
+  stream: true                                      messages: [...]
+  tools: [...]                                      stream: true
+                                                    tools: [...]
+
+                          ←  响应中 model 名换回   ←  SSE / JSON
+                              upstream_name → ollama_name
+                              Copilot 始终看到 "v4flash"
+```
+
+## 端点
+
+| 端点 | 方法 | Copilot 用途 | 说明 |
+|---|---|---|---|
+| `/` | GET | 探测服务存活 | 返回版本号 |
+| `/api/tags` | GET | 拉取可用模型列表 | Ollama 格式 |
+| `/api/show` | POST | 查询模型能力和上下文 | 按配置文件回答 |
+| `/v1/models` | GET | 模型列表（OpenAI 格式） | 兼容部分客户端 |
+| `/v1/chat/completions` | POST | **Copilot 实际对话端点** | 替换 model 名后透传，响应中换回 ollama_name |
+| `/api/chat` | POST | Ollama 原生对话 | Ollama ↔ OpenAI 格式转换，给原生 Ollama 客户端用 |
+
+## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
-pip install flask requests
+pip install flask requests pyyaml
 ```
 
-### 2. 修改配置
+### 2. 创建配置文件
 
-打开 `OllamaProxy.py`，在顶部的配置区域填写你的上游提供商信息：
+在 `%USERPROFILE%\.ollama-proxy\` 下创建 `config.yaml`，填入你的 API 信息和模型列表。
 
-```python
-BASE_URL = "https://api.deepseek.com/v1"        # 上游 OpenAI 兼容地址
-API_KEY  = "sk-your-api-key-here"                # 你的 API Key
-DEFAULT_MODEL = "deepseek-v4-flash"              # 默认模型
-EXPOSED_MODELS = [                               # 对外暴露的模型列表
-    "deepseek-v4-flash",
-    "deepseek-v4-pro"
-]
-```
-
-> ⚠️ **安全提醒**：API Key 是敏感信息，请勿将包含真实 Key 的配置文件提交到 Git 仓库。
-
-### 3. 启动代理
+### 3. 启动
 
 ```bash
-python OllamaProxy.py
+python proxy.py
 ```
 
-启动成功后，代理将监听在 `http://localhost:11434`，终端会打印如下信息：
+### 4. 在 VS2026 / SSMS22 中使用
 
-```
-==================================================
-  Ollama Proxy 启动
-  转发目标 : https://api.deepseek.com/v1
-  监听地址 : http://localhost:11434
-  暴露模型 : deepseek-v4-flash, deepseek-v4-pro
-==================================================
-```
+1. 打开 Copilot Chat → 模型下拉 → Manage Models
+2. 选择 Ollama 作为 Provider
+3. 将 Endpoint 指向 `http://localhost:11434`
+4. 在模型列表中选择你配置的模型
 
-### 4. 在 Visual Studio 中使用
-
-1. 在 VS 中安装并启用 Copilot 或其他支持 Ollama 的扩展。
-2. 将 Ollama 的服务地址指向 `http://localhost:11434`（如果扩展默认寻找本地 Ollama，则无需修改）。
-3. 在模型列表中选择你在 `EXPOSED_MODELS` 中配置的模型名称即可开始使用。
-
-## 📖 路由说明
-
-| 路径 | 方法 | 说明 | 适用场景 |
-| :--- | :--- | :--- | :--- |
-| `/v1/models` | GET | 返回 OpenAI 格式的模型列表 | VS 使用 OpenAI SDK 拉取模型 |
-| `/v1/chat/completions` | POST | 原样透传至上游 `/chat/completions` | VS 实际对话核心路由（零转换） |
-| `/api/tags` | GET | 返回 Ollama 格式的模型列表 | Ollama 原生客户端拉取模型 |
-| `/api/show` | POST | 返回 Ollama 格式的模型详情 | Ollama 原生客户端查看模型信息 |
-| `/api/chat` | POST | Ollama → OpenAI 格式双向转换 | Ollama 原生客户端对话（备用） |
-| `/` 或 `/api/version` | GET | 健康检查/版本信息 | 确认代理是否存活 |
-
-## 🧪 验证代理
-
-启动代理后，可以用 `curl` 快速验证是否正常工作：
+## 验证
 
 ```bash
 # 健康检查
-curl http://localhost:11434/api/version
+curl http://localhost:11434/
 
-# 查看模型列表（OpenAI 格式）
-curl http://localhost:11434/v1/models
-
-# 查看模型列表（Ollama 格式）
+# 模型列表
 curl http://localhost:11434/api/tags
 
-# 测试对话（非流式）
-curl http://localhost:11434/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"你好"}]}'
+# 模型详情
+curl -X POST http://localhost:11434/api/show -H "Content-Type: application/json" -d "{\"model\":\"deepseek-chat\"}"
+
+# 对话测试（Ollama 原生格式）
+curl http://localhost:11434/api/chat -H "Content-Type: application/json" -d "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":false}"
+
+# 对话测试（OpenAI 格式 — Copilot 实际使用的端点）
+curl http://localhost:11434/v1/chat/completions -H "Content-Type: application/json" -d "{\"model\":\"deepseek-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"Hello\"}],\"stream\":false}"
 ```
 
-## ⚠️ 局限性
-
-- **仅支持 Chat Completions**：不支持 `/api/generate`（Ollama generate 端点）、`/api/embeddings`（向量嵌入）等端点。
-- **不支持模型管理**：不支持 `/api/pull`（下载模型）、`/api/push`（上传模型）等操作。
-- **单进程运行**：基于 Flask 开发服务器，不适合高并发生产环境。
-- **依赖上游格式兼容**：要求上游 API 必须完全兼容 OpenAI 的 Chat Completions 格式。
-
-## 📄 协议与作者
+## 协议与作者
 
 - **作者**：ZY
 - **许可证**：[MIT License](https://opensource.org/licenses/MIT)
