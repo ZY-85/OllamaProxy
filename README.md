@@ -46,11 +46,11 @@ graph LR
 ```
 ### 工作原理
 VS2026 Copilot 采用**混合协议**模式：
-- **模型发现**：使用 Ollama 原生端点 (`/api/tags`, `/api/show`) 获取模型列表和能力。
-- **实际对话**：使用 OpenAI 兼容端点 (`/v1/chat/completions`) 发送请求。
+- **模型发现**：使用 Ollama 原生端点 `/api/tags`, `/api/show` 获取模型列表和能力。
+- **实际对话**：使用 OpenAI 兼容端点 `/v1/chat/completions` 发送请求。
 代理的核心工作是**协议适配与模型名映射**：
 1. 拦截 Copilot 请求，根据配置路由到正确的云端 API。
-2. 将请求中的模型名（`ollama_name`）替换为云端真实名（`upstream_name`）。
+2. 将请求中的模型名`ollama_name`替换为云端真实名`upstream_name`。
 3. 将响应中的模型名换回，确保 Copilot 界面显示一致。
 ---
 ## 详细配置
