@@ -46,11 +46,11 @@ graph LR
 ```
 ### Working Principle
 VS2026 Copilot adopts a **Hybrid Protocol** mode:
-- **Model Discovery**: Uses native Ollama endpoints (`/api/tags`, `/api/show`) to get the model list and capabilities.
-- **Actual Chat**: Uses OpenAI compatible endpoints (`/v1/chat/completions`) to send requests.
+- **Model Discovery**: Uses native Ollama endpoints `/api/tags`, `/api/show` to get the model list and capabilities.
+- **Actual Chat**: Uses OpenAI compatible endpoints `/v1/chat/completions` to send requests.
 The proxy's core job is **Protocol Adaptation and Model Name Mapping**:
 1. Intercept Copilot requests and route them to the correct cloud API based on configuration.
-2. Replace the model name (`ollama_name`) in the request with the real cloud name (`upstream_name`).
+2. Replace the model name `ollama_name` in the request with the real cloud name `upstream_name`.
 3. Swap the model name back in the response to ensure consistency in the Copilot interface.
 ---
 ## Detailed Configuration
